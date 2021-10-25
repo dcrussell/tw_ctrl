@@ -138,5 +138,6 @@ mod tests {
         let res = crate::config::parse(&file).unwrap();
         assert_eq!(0, res.len());
         assert!(!res.get("key").is_some());
+        delete_file(&file);
     }
 }
