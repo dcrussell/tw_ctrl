@@ -1,14 +1,18 @@
-mod config;
 use serialport;
-use std::{thread, time};
+use std::error::Error;
+use std::process;
+use tw_ctrl::config::Config;
+
+//TODO: Add logger for output
 fn main() {
-    let mut port = serialport::new("/dev/tty1", 9600)
-        .open()
-        .expect("Failed to open port");
-    //    let run_args = config::parse(&"config".to_string()).expect("Wut?");
-    loop {
-        let out = "Hello there!".as_bytes();
-        port.write(out).expect("write failed");
-        thread::sleep(time::Duration::from_millis(1000));
+    let config = Config::new(&"config".to_string()).unwrap_or_else(|err| {
+        println!("Error processing config file: {}", err);
+        process::exit(1);
+    });
+
+    // Run the controller
+    if let Err(e) = tw_ctrl::run(config) {
+        println!("Error running controller: {}", e);
+        process::exit(1);
     }
 }
