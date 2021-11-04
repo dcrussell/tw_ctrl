@@ -12,11 +12,9 @@ struct KVPair {
     value: String,
 }
 impl Config {
+    /// Retuns a Config parsed from the file path provided
     pub fn new(path: &str) -> Result<Config, std::io::Error> {
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(e) => return Err(e),
-        };
+        let file = File::open(path)?;
         let mut config = Config {
             kv_pairs: HashMap::new(),
         };
