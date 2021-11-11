@@ -1,7 +1,7 @@
 #Configuration settings for the Tiny Weather controller
 
 # Serial device settings
-serial.device=/dev/ttyACM0
+serial.device=/dev/ttyUSB0
 serial.baud=9600
 
 # Log settings

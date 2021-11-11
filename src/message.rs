@@ -1,6 +1,11 @@
+// TODO: Implement fmt::Dispay or
+// the Error trait for IdError
+// and Message Error
+
 use std::fmt;
 #[repr(u8)]
 #[derive(Debug)]
+
 pub enum MessageId {
     CmdReset,
     CmdTph,
@@ -12,10 +17,10 @@ pub enum MessageId {
     RspPress,
     RspHum,
 }
-// TODO: Implement fmt::Display
 pub struct IdError;
 
 impl MessageId {
+    //TODO: What's the better way to do this
     pub fn value(&self) -> u8 {
         match *self {
             MessageId::CmdReset => 0x01,
@@ -53,29 +58,31 @@ pub struct Message {
 
 pub struct MessageError;
 impl Message {
-    fn new(id: MessageId) -> Message {
+    pub fn new(id: MessageId) -> Message {
         Message {
             id,
+            // TODO: Vec or arr?
             payload: Vec::new(),
         }
     }
 
     pub fn len(&self) -> usize {
+        //For now just convert
         self.payload.len() + 1
     }
 
-    fn id(&self) -> &MessageId {
+    pub fn id(&self) -> &MessageId {
         &self.id
     }
 
-    fn deserialize(bytes: Vec<u8>) -> Result<Message, MessageError> {
+    pub fn deserialize(bytes: &[u8]) -> Result<Message, &'static str> {
         Ok(Message {
             id: match bytes.get(0) {
                 Some(id) => match MessageId::from_value(id) {
                     Ok(msgid) => msgid,
-                    Err(e) => return Err(MessageError),
+                    Err(e) => return Err("Invalid Id value"),
                 },
-                None => return Err(MessageError),
+                None => return Err("Empty bytes"),
             },
             payload: bytes[1..].to_vec(),
         })
@@ -85,13 +92,18 @@ impl Message {
         let mut v = Vec::new();
         v.push(self.id.value());
         for n in &self.payload {
-            v.push(*n);
+            v.push(n.clone());
         }
         v
     }
 
-    fn payload(&self) -> &Vec<u8> {
+    pub fn payload(&self) -> &Vec<u8> {
         &self.payload
+    }
+
+    pub fn set_payload(&mut self, data: &[u8]) {
+        self.payload.clear();
+        self.payload.append(&mut data.to_vec());
     }
 }
 
@@ -166,7 +178,7 @@ mod tests {
     #[test]
     fn test_deserialize() {
         let v: Vec<u8> = vec![0x06, 0x02];
-        let msg = match Message::deserialize(v) {
+        let msg = match Message::deserialize(&v) {
             Ok(m) => m,
             Err(_) => panic!("Failed to deserialize"),
         };

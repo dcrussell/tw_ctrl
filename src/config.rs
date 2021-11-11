@@ -34,10 +34,10 @@ impl Config {
         self.kv_pairs.get(key)
     }
 }
-fn filter_comments(line: String) -> String {
+fn filter_comments(line: &str) -> String {
     let comment_pos = match line.find("#") {
         Some(i) => i,
-        None => return line,
+        None => return line.to_string(),
     };
     //TODO:  Maybe a better way to do this?
     let filtered = line[..comment_pos].to_string();
@@ -45,7 +45,7 @@ fn filter_comments(line: String) -> String {
 }
 
 fn parse_line(line: String) -> Option<KVPair> {
-    let filtered = filter_comments(line);
+    let filtered = filter_comments(&line);
     // TODO: Find works fine here with ASCII text
     // but fails to work with unicode. Need
     // to find a better way to do this
