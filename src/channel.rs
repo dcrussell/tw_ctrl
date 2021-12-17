@@ -1,340 +1,297 @@
-pub mod serial {
-    use std::error::Error;
-    use std::io::{Read, Write};
+//! This module is responsible for the transmission of commands to the
+//! station. It implements a simple trasport-like protocol for (mostly) reliable
+//! communication. Each payload is wrapped into a frame (not to be confused
+//! with a serial frame) that's then transported over the serial port. There
+//! is a three byte header and a three byte trailer encompassing each payload.
+//!
+//!
+//! *Header*
+//!
+//! The header is defined as:
+//!
+//! byte: [      1     ][      2     ][       3       ]
+//!       [ Start Byte ][ Frame Type ][ Paylod Length ]
+//!
+//!
+//! Start - 0x7f
+//!
+//! Frame Type - 0x44: Indicates that the frame is a data frame.
+//!              This is the frame type used when commands are
+//!              being sent to the station and data is sent back.
+//!
+//!              Ox43: Indicates that the frame is a control frame.
+//!              Control frames are only used by the trasport layer
+//!              to signal whether a frame was successfully recieved.
+//!
+//!
+//! Paylod length - Obvious. Note that in this implementation payload length is
+//!                 an 8 bit number so the maximum payload size allowed is
+//!                 255 bytes.
+//!
+//!
+//! *Trailer*
+//!
+//! The trailer is defined as:
+//!
+//! byte: [     1     ][      2     ][     3     ]
+//!       [          CRC            ][  End byte ]
+//!
+//!
+//! CRC - a 16 bit CRC check value used by the transport layer
+//!       to verify clean transmission of data. The value is calculated
+//!       over the payload portion only.
+//!
+//! End - 0xfe
+//!
+//!
+//!
+//! *Control Frames*
+//!
+//! There are currently two control frames used by the trasport layer -- ACK
+//! frames and NACK frames.Each control frame uses the control frame type i
+//! dentifier and utilizes the payload portion of a frame to indicate which
+//! kind it is,as well as provide additional data.
+//!
+//! ACK frames communicate successful reciept of a data frame. All ACK frames
+//! are the same:
+//!
+//! [ 0x7f ][ 0x43 ][ length 1][ACK ID (0x01)][ CRC ][ 0xfe ]
+//!
+//! NACK frames hold the opposite meaning. They communicate error anytime the
+//! transport layer runs into an issue. Each NACK frame has a one byte NACK
+//! frame ID indicating the type of NACK error
+//!
+//! The geneal layout for a NACK frame is then:
+//!
+//! [ 0x7f ][ 0x43 ][ length: 1 ][ NACK ID][ CRC ][ 0xfe ]
+//!
+//!
+//! The set of NACK IDs are:
+//!
+//! CRCFAIL  - 0x02: The CRC check failed.
+//!
+//! OVERSIZE - 0x03: The frame being recieved is larger than the reciept will
+//!                  handle.
+//!
+//! InvalidFrame - 0x04: The frame is missing either the start, the end, or
+//!                      has the wrong frame type.
+//!
+//!
+//! *Communication*
+//! TODO: Write this.
+//!
+//!
+//!
+//!
+//!
+//!
 
-    use crate::message::{Message, MessageId};
-    use serialport;
+use crate::crc16;
+use crate::log;
 
-    const MAX_FRAME_SIZE: u8 = 86;
-    const MIN_FRAME_SIZE: u8 = 6; // Assume a minimum
-    const FRAME_START: u8 = 0x7f;
-    const FRAME_END: u8 = 0xfe;
-    const FRAME_ACK: u8 = 0x01;
-    const FRAME_NACK: u8 = 0x02;
-    const ACK_FRAME: [u8; 7] = [FRAME_START, 0x43, 0x01, FRAME_ACK, 0x72, 0x26, FRAME_END];
+/// Frame constants
+const FRAME_START: u8 = 0x7f;
+const FRAME_END: u8 = 0xfe;
+const FRAME_TYPE_DATA: u8 = 0x44;
+const FRAME_TYPE_CTRL: u8 = 0x43;
+const FRAME_SIZE_MAX: usize = 86;
 
-    enum FrameType {
-        Control,
-        Data,
+enum ControlType {
+    Ack = 0x01,
+    CRCFail = 0x02,
+    Oversize = 0x03,
+    InvalidFrame = 0x04,
+}
+
+use crate::serialport;
+pub struct Channel {
+    port: serialport::SerialPort,
+    num_attempts: u32,
+}
+
+#[derive(Debug)]
+pub struct Error {
+    kind: ErrorKind,
+    description: String,
+}
+
+impl Error {
+    fn new(kind: ErrorKind, description: &str) -> Error {
+        Error {
+            kind,
+            description: description.to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ErrorKind {
+    NoAck,
+    Oversize,
+    MaxAttempts,
+    SerialPort(serialport::ErrorKind),
+}
+
+fn make_control_frame(ctype: ControlType) -> [u8; 7] {
+    let mut frame: [u8; 7] = [0; 7];
+    frame[0] = FRAME_START;
+    frame[1] = FRAME_TYPE_CTRL;
+    frame[2] = 0x01; // length
+    frame[3] = ctype as u8;
+
+    let crc = crc16::crc16(&frame[3..4]);
+    frame[4] = (crc & 0xff as u16) as u8;
+    frame[5] = (crc >> 8) as u8;
+    frame[6] = FRAME_END;
+    frame
+}
+pub type Result<T> = std::result::Result<T, Error>;
+impl Channel {
+    pub fn new(port: serialport::SerialPort, num_attempts: u32) -> Channel {
+        Channel { port, num_attempts }
     }
 
-    impl FrameType {
-        fn value(&self) -> u8 {
-            match *self {
-                FrameType::Control => 0x43,
-                FrameType::Data => 0x44,
-            }
+    pub fn send(&self, payload: &[u8]) -> Result<()> {
+        use crate::crc16;
+        let mut frame: [u8; FRAME_SIZE_MAX] = [0; FRAME_SIZE_MAX];
+        let payload_len = payload.len();
+        if payload_len > FRAME_SIZE_MAX - 6 {
+            return Err(Error::new(
+                ErrorKind::Oversize,
+                "Payload larger than maximum payload size",
+            ));
+        }
+        frame[0] = 0x7f;
+        frame[1] = FRAME_TYPE_DATA;
+        frame[2] = payload_len as u8; // Length
+        for i in 0..payload.len() {
+            frame[3 + i] = payload[i];
         }
 
-        fn from_value(value: &u8) -> Result<FrameType, &'static str> {
-            match &value {
-                0x43 => Ok(FrameType::Control),
-                0x44 => Ok(FrameType::Data),
-                _ => Err("Value is not a valid frame type"),
+        let frame_crc = crc16::crc16(&frame[3..3 + payload_len]);
+        frame[3 + payload_len] = (frame_crc & 0xff as u16) as u8;
+        frame[3 + payload_len + 1] = (frame_crc >> 8) as u8;
+        frame[3 + payload_len + 2] = 0xfe;
+        log::debug(&format!("Sending command {:?}", &frame[..payload_len + 6]));
+
+        // send and listen for ACK or NACK
+        let mut n_attempts = 0;
+        while n_attempts < 3 {
+            match self.port.write(&frame[..6 + payload_len]) {
+                Ok(n) => log::debug(&format!("Sent bytes: {}", n)),
+                Err(e) => {
+                    log::debug(&format!("Error: {:?}", e));
+                    return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+                }
             }
-        }
-    }
-
-    struct Frame {
-        ftype: FrameType,
-        payload_len: u8,
-        payload: Message,
-        checksum: u16,
-    }
-
-    pub struct Channel {
-        port: serialport::TTYPort,
-        attempts: u32,
-    }
-
-    impl Channel {
-        pub fn send(&mut self, message: Message) -> Result<(), &'static str> {
-            let f = Frame::new(FrameType::Data, message);
-            let mut attempt = 0;
-            while attempt < self.attempts {
-                let n = match self.port.write(&f.serialize()) {
-                    Ok(n) => n,
-                    Err(_) => 0,
-                };
-                println!("N bytes sent: {}", n);
-                if n == f.len().into() {
-                    //TODO
-                    //If NACK, do something (print, log)
-                    let mut ack: [u8; 4] = [0; 4]; // no need to read full ack
-                    let mut n = 0;
-                    self.port.read(&mut ack);
-                    println!(
-                        "RECV: {:#04x} {:#04x} {:#04x} {:#04x}",
-                        ack[0], ack[1], ack[2], ack[3]
-                    );
-                    if ack[3] == FRAME_ACK {
-                        return Ok(());
-                    } else if ack[3] == FRAME_NACK {
-                        println!("NACK");
-                    } else {
-                        println!("Unknown err: {}", ack[3]);
+            let mut control: [u8; FRAME_SIZE_MAX] = [0; FRAME_SIZE_MAX];
+            let mut nbytes = 0;
+            // pull in header
+            while nbytes < 3 {
+                match self.port.read(&mut control[nbytes..3]) {
+                    Ok(n) => {
+                        nbytes = nbytes + n;
+                        log::debug(&format!("Recieved {} bytes", n));
+                    }
+                    Err(e) => log::error(&format!("Error {:?}", e)),
+                }
+            }
+            if control[0] != 0x7f || control[1] != FRAME_TYPE_CTRL {
+                self.port.flush();
+            } else {
+                let payload_len = control[2] as usize;
+                //get the remaining parts of the frame
+                nbytes = 3;
+                while nbytes < payload_len as usize + 6 {
+                    match self.port.read(&mut control[nbytes..payload_len + 6]) {
+                        Ok(n) => {
+                            nbytes = nbytes + n;
+                            log::debug(&format!("Recieved {} bytes", n));
+                        }
+                        Err(e) => log::error(&format!("Error {:?}", e)),
                     }
                 }
-                attempt += 1;
-            }
-            Err("Maximum number of send attempts reached")
-        }
 
-        //TODO: Log intermediate errors
-        pub fn listen(&mut self) -> Result<Message, &'static str> {
-            let mut attempt: u32 = 0;
-            while attempt < self.attempts {
-                let mut frame: Vec<u8> = vec![0; MAX_FRAME_SIZE.into()];
-                let n = match self.port.read(&mut frame[..3]) {
-                    Ok(n) => n,
-                    Err(_) => 0,
-                };
-                if n == 3 && frame[1] == FrameType::Data.value() {
-                    let payload_size = *frame.get(2).unwrap() as usize;
-                    //TODO Read rest of data and parse
-                    let nbytes = match self.port.read(&mut frame[3..payload_size + 3]) {
-                        Ok(n) => n,
-                        Err(_) => 0,
-                    };
-                    if nbytes == payload_size + 3 {
-                        let f = Frame::deserialize(&frame)?;
-                        return Ok(f.payload_copy());
+                if control[3] == 0x01 {
+                    log::debug("Recieved ACK");
+                    return Ok(());
+                }
+            }
+            n_attempts += 1;
+        }
+        Err(Error::new(
+            ErrorKind::NoAck,
+            "Failed recieving ACK after command",
+        ))
+    }
+    pub fn recv(&self) -> Result<Vec<u8>> {
+        use crate::crc16;
+        let mut attempts = 0;
+        while attempts < self.num_attempts {
+            let mut frame: Vec<u8> = vec![0; FRAME_SIZE_MAX];
+            let mut nbytes = 0;
+
+            // pull in header
+            while nbytes < 3 {
+                match self.port.read(&mut frame[nbytes..3]) {
+                    Ok(n) => {
+                        nbytes = nbytes + n;
+                        log::debug(&format!("Recieved {} bytes", n));
+                    }
+                    Err(e) => {
+                        log::error(&format!("{:?}", e));
+                        break;
                     }
                 }
-
-                attempt += 1;
             }
-            Err("Maximum number of read attempts reached")
-        }
+            if frame[0] != FRAME_START || frame[1] != FRAME_TYPE_DATA {
+                self.send_ctrl_frame(ControlType::InvalidFrame)?;
+                self.port.flush();
+            } else if frame[2] as usize > FRAME_SIZE_MAX - 6 {
+                self.send_ctrl_frame(ControlType::Oversize);
+                self.port.flush();
+            } else {
+                let payload_len = frame[2] as usize;
 
-        pub fn new(port: serialport::TTYPort, attempts: u32) -> Channel {
-            Channel { port, attempts }
-        }
-
-        //    fn open();
-    }
-
-    impl Frame {
-        fn serialize(&self) -> Vec<u8> {
-            let mut data: Vec<u8> = Vec::new();
-            data.push(FRAME_START);
-            data.push(self.ftype.value());
-            data.push(self.payload.len() as u8);
-            data.append(&mut self.payload.serialize());
-            data.push((self.checksum & 0xff) as u8);
-            data.push((self.checksum >> 8) as u8);
-            data.push(FRAME_END);
-            data
-        }
-        fn payload_copy(&self) -> Message {
-            // This works for now
-            let mut msg = Message::new(match MessageId::from_value(&self.payload.id().value()) {
-                Ok(id) => id,
-                Err(_) => panic!("Failed id conversion"),
-            });
-            msg.set_payload(&self.payload.payload().clone());
-            msg
-        }
-        fn payload(&self) -> &Message {
-            &self.payload
-        }
-
-        fn deserialize(bytes: &[u8]) -> Result<Frame, &'static str> {
-            // TODO: 1) Check for start and end bytes
-            // 2) Check len < MAX_FRAME_SIZE and Min frame
-            // 3) attempt to deserialize
-            //
-            if bytes.len() > MAX_FRAME_SIZE.into() {
-                return Err("Invalid frame: Frame larger than maximum frame size");
-            }
-            if bytes.len() < MIN_FRAME_SIZE.into() {
-                return Err("Invalid frame: Frame less than minimum size");
-            }
-            let start = match bytes.get(0) {
-                Some(n) => n,
-                None => return Err("Empty bytes"),
-            };
-            if *start != FRAME_START {
-                return Err("Invalid frame: no frame start value");
-            }
-            let end = match bytes.get(bytes.len() - 1) {
-                Some(n) => n,
-                None => return Err("Empty bytes"),
-            };
-            if *end != FRAME_END {
-                return Err("Invalid frame: no frame end value");
-            }
-
-            let mut checksum: u16 = *bytes.get(bytes.len() - 3).unwrap() as u16;
-            checksum |= (*bytes.get(bytes.len() - 2).unwrap() as u16) << 8;
-            if checksum != crc16(&bytes[3..bytes.len() - 3]) {
-                return Err("Invalid frame: Failed CRC");
-            }
-
-            Ok(Frame {
-                ftype: match bytes.get(1) {
-                    Some(id) => FrameType::from_value(id)?,
-                    None => return Err("Invalid Frame: No type"),
-                },
-                payload_len: match bytes.get(2) {
-                    Some(n) => *n,
-                    None => return Err("Invalid Frame: No length"),
-                },
-                checksum,
-                payload: Message::deserialize(&bytes[3..])?,
-            })
-        }
-        fn len(&self) -> u8 {
-            self.payload_len + 6
-        }
-        //fn checksum();
-        fn new(ftype: FrameType, message: Message) -> Frame {
-            let crc = crc16(&message.serialize());
-
-            Frame {
-                ftype,
-                payload_len: message.len() as u8, // How do I want to do this?
-                payload: message,
-                checksum: crc,
-            }
-        }
-        fn ftype(&self) -> &FrameType {
-            &self.ftype
-        }
-    }
-    // TODO: make this more 'rust' like
-    fn crc16(arr: &[u8]) -> u16 {
-        let mut crc: u16 = 0;
-        let mut it = arr.iter();
-        let mut sz: usize = arr.len();
-        while 0 != sz {
-            let data: u16 = *it.next().unwrap() as u16;
-            crc = crc ^ (data << 8);
-            for i in 0..8 {
-                if (crc & 0x8000) != 0 {
-                    crc = (crc << 1) ^ 0x1021;
+                //get the remaining parts of the frame
+                nbytes = 3;
+                while nbytes < payload_len as usize + 6 {
+                    match self.port.read(&mut frame[nbytes..payload_len + 6]) {
+                        Ok(n) => {
+                            nbytes = nbytes + n;
+                            log::debug(&format!("Recieved {} bytes", n));
+                        }
+                        Err(e) => log::error(&format!("Error {:?}", e)),
+                    }
+                }
+                if frame[payload_len + 6 - 1] != FRAME_END {
+                    self.send_ctrl_frame(ControlType::InvalidFrame)?;
+                    self.port.flush();
                 } else {
-                    crc <<= 1;
+                    let check: u16 = crc16::crc16(&frame[3..3 + payload_len]);
+                    let mut frame_crc: u16 = frame[payload_len + 6 - 3] as u16 & 0xff;
+                    frame_crc |= (frame[payload_len + 6 - 2] as u16) << 8;
+                    if check != frame_crc {
+                        self.send_ctrl_frame(ControlType::CRCFail);
+                        self.port.flush();
+                    } else {
+                        self.send_ctrl_frame(ControlType::Ack);
+                        return Ok(frame[3..3 + payload_len].to_vec());
+                    }
                 }
             }
-            sz = sz - 1;
+            attempts += 1;
         }
-        crc
+        Err(Error::new(
+            ErrorKind::MaxAttempts,
+            "Maximum number of recieve attempts reached",
+        ))
     }
-    #[cfg(test)]
-    mod tests {
-
-        use super::*;
-        use crate::message::{Message, MessageId};
-        #[test]
-        fn test_crc() {
-            // TODO: This is ugly..
-            let v: Vec<u8> = vec!['A' as u8, 'B' as u8, 'C' as u8, 'D' as u8];
-            assert_eq!(0x3b3a, crc16(&v));
-        }
-
-        #[test]
-        fn new_frame() {
-            let msg = Message::new(MessageId::CmdTph);
-            let frame = Frame::new(FrameType::Data, msg);
-            assert_eq!(FrameType::Data.value(), frame.ftype().value());
-            assert_eq!(7, frame.len());
-            assert_eq!(MessageId::CmdTph.value(), frame.payload().id().value());
-        }
-
-        #[test]
-        fn frame_serialize() {
-            let expected = vec![
-                0x7f, 0x44, 0x05, 0x01, 0x41, 0x42, 0x43, 0x44, 0x6b, 0x91, 0xfe,
-            ];
-            let v = vec![0x01, 0x41, 0x42, 0x43, 0x44];
-            let msg = Message::deserialize(&v).unwrap();
-            let frame = Frame::new(FrameType::Data, msg);
-            let f = frame.serialize();
-            assert_eq!(expected, f);
-        }
-
-        #[test]
-        fn frame_deserialize() {
-            let frame = vec![
-                0x7f, 0x44, 0x05, 0x01, 0x41, 0x42, 0x43, 0x44, 0x6b, 0x91, 0xfe,
-            ];
-            let f = Frame::deserialize(&frame).unwrap();
-            assert_eq!(f.ftype().value(), FrameType::Data.value());
-            assert_eq!(f.len(), 11);
-            assert_eq!(f.payload().id().value(), MessageId::CmdReset.value());
-        }
-        #[test]
-        #[should_panic]
-        fn oversized_frame() {
-            let v: [u8; 100] = [0x46; 100];
-            let f = match Frame::deserialize(&v) {
-                Ok(f) => f,
-                Err(e) => panic!("Err {}", e),
-            };
-        }
-        #[test]
-        #[should_panic]
-        fn undersized_frame() {
-            let v = [0x45];
-            let f = match Frame::deserialize(&v) {
-                Ok(f) => f,
-                Err(e) => panic!("Err {}", e),
-            };
-        }
-
-        #[test]
-        #[should_panic]
-        fn no_frame_start() {
-            let v: [u8; 6] = [0x10; 6];
-            let f = match Frame::deserialize(&v) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("E: {}", e);
-                    panic!("Err");
-                }
-            };
-        }
-
-        #[test]
-        #[should_panic]
-        fn no_frame_end() {
-            let v: [u8; 6] = [0x7f; 6];
-            let f = match Frame::deserialize(&v) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("E: {}", e);
-                    panic!("Err");
-                }
-            };
-        }
-
-        #[test]
-        #[should_panic]
-        fn no_frame_type() {
-            let v: [u8; 6] = [0x7f, 0x44, 0x00, 0x00, 0x00, 0xfe];
-            let f = match Frame::deserialize(&v) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("E: {}", e);
-                    panic!("Err");
-                }
-            };
-        }
-        #[test]
-        #[should_panic]
-        fn crc_failure() {
-            let frame = vec![
-                0x7f, 0x44, 0x05, 0x01, 0x41, 0x42, 0x43, 0x48, 0x6b, 0x91, 0xfe,
-            ];
-
-            let f = match Frame::deserialize(&frame) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("E: {}", e);
-                    panic!("Err");
-                }
-            };
+    fn send_ctrl_frame(&self, ctype: ControlType) -> Result<()> {
+        let frame = make_control_frame(ctype);
+        match self.port.write(&frame) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Error::new(ErrorKind::SerialPort(*e.kind()), e.desc())),
         }
     }
 }

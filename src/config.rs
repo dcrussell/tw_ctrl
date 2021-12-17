@@ -1,3 +1,4 @@
+//! Module used for parsing the config file
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -29,11 +30,12 @@ impl Config {
 
         return Ok(config);
     }
-
+    ///Return a value for a key if it exists.
     pub fn get(&self, key: &str) -> Option<&String> {
         self.kv_pairs.get(key)
     }
 }
+
 fn filter_comments(line: &str) -> String {
     let comment_pos = match line.find("#") {
         Some(i) => i,

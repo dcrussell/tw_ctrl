@@ -1,4 +1,7 @@
 pub trait Serializable {
-    fn serialize(&self) -> Vec<u8>;
-    fn deserialize<T, E>(bytes: Vec<u8>)
+    type Error;
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error>;
+    fn deserialize(bytes: &[u8]) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
 }
