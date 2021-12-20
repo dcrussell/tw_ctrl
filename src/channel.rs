@@ -47,26 +47,21 @@
 //!
 //! *Control Frames*
 //!
-//! There are currently two control frames used by the trasport layer -- ACK
-//! frames and NACK frames.Each control frame uses the control frame type i
-//! dentifier and utilizes the payload portion of a frame to indicate which
-//! kind it is,as well as provide additional data.
-//!
-//! ACK frames communicate successful reciept of a data frame. All ACK frames
-//! are the same:
-//!
-//! [ 0x7f ][ 0x43 ][ length 1][ACK ID (0x01)][ CRC ][ 0xfe ]
-//!
+//! There are currently five control frames used by the trasport layer -- one
+//! ACK frame, three NACK frames, and one special heartbeat frame.
+//! ACK frames communicate successful reciept of a data frame.
 //! NACK frames hold the opposite meaning. They communicate error anytime the
-//! transport layer runs into an issue. Each NACK frame has a one byte NACK
-//! frame ID indicating the type of NACK error
+//! transport layer runs into an issue. The heartbeat frame is a special frame
+//! that is used to confirm that the recieving device is up and ready.
+//! Each control frame uses the control frame identifier and utilizes
+//! the payload portion of a frame to indicate which kind it is.
+//! All control frames are 7 bytes long and have the following layout:
 //!
-//! The geneal layout for a NACK frame is then:
-//!
-//! [ 0x7f ][ 0x43 ][ length: 1 ][ NACK ID][ CRC ][ 0xfe ]
+//! [ 0x7f ][ 0x43 ][ length 1][Control frame identifier][ CRC ][ 0xfe ]
 //!
 //!
-//! The set of NACK IDs are:
+//! The set of control frame identifiers are:
+//! ACK - 0x01: Acknowledge.
 //!
 //! CRCFAIL  - 0x02: The CRC check failed.
 //!
@@ -76,6 +71,7 @@
 //! InvalidFrame - 0x04: The frame is missing either the start, the end, or
 //!                      has the wrong frame type.
 //!
+//! Heartbeat - 0x05: Used to confirm that a connection has been established.
 //!
 //! *Communication*
 //! TODO: Write this.

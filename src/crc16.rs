@@ -1,3 +1,6 @@
+//! This module provides an implementation of CRC16 XMODEM
+
+///Calculate the Checksum for an arr of bytes
 pub fn crc16(arr: &[u8]) -> u16 {
     let mut crc: u16 = 0;
     let mut it = arr.iter();
