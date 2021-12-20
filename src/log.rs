@@ -36,43 +36,43 @@ pub mod file {
             self.level = if level > LOGLEVEL { LOGLEVEL } else { level };
         }
 
-        pub fn log(&mut self, level: &Level, s: &str) -> Result<()> {
+        pub fn log(&self, level: &Level, s: &str) -> Result<()> {
             match level {
                 Level::Off => (),
-                Level::Debug => writeln!(&mut self.file, "[DEBUG] {}", s)?,
-                Level::Info => writeln!(&mut self.file, "[INFO] {}", s)?,
-                Level::Warning => writeln!(&mut self.file, "[WARN] {}", s)?,
-                Level::Error => writeln!(&mut self.file, "[ERROR] {}", s)?,
-                Level::Fatal => writeln!(&mut self.file, "[FATAL] {}", s)?,
+                Level::Debug => writeln!(&self.file, "[DEBUG] {}", s)?,
+                Level::Info => writeln!(&self.file, "[INFO] {}", s)?,
+                Level::Warning => writeln!(&self.file, "[WARN] {}", s)?,
+                Level::Error => writeln!(&self.file, "[ERROR] {}", s)?,
+                Level::Fatal => writeln!(&self.file, "[FATAL] {}", s)?,
             };
 
             Ok(())
         }
-        pub fn debug(&mut self, s: &str) -> Result<()> {
+        pub fn debug(&self, s: &str) -> Result<()> {
             if Level::Debug <= self.level {
                 self.log(&Level::Debug, &s)?;
             }
             Ok(())
         }
-        pub fn info(&mut self, s: &str) -> Result<()> {
+        pub fn info(&self, s: &str) -> Result<()> {
             if Level::Info <= self.level {
                 self.log(&Level::Info, &s)?;
             }
             Ok(())
         }
-        pub fn warn(&mut self, s: &str) -> Result<()> {
+        pub fn warn(&self, s: &str) -> Result<()> {
             if Level::Warning <= self.level {
                 self.log(&Level::Warning, &s)?;
             }
             Ok(())
         }
-        pub fn error(&mut self, s: &str) -> Result<()> {
+        pub fn error(&self, s: &str) -> Result<()> {
             if Level::Error <= self.level {
                 self.log(&Level::Error, &s)?;
             }
             Ok(())
         }
-        pub fn fatal(&mut self, s: &str) -> Result<()> {
+        pub fn fatal(&self, s: &str) -> Result<()> {
             if Level::Fatal <= self.level {
                 self.log(&Level::Fatal, &s)?;
             }
@@ -81,6 +81,7 @@ pub mod file {
     }
 }
 
+// Global log Level
 const LOGLEVEL: Level = Level::Debug;
 
 //#[macro_export]
