@@ -101,6 +101,7 @@ enum ControlType {
     CRCFail = 0x02,
     Oversize = 0x03,
     InvalidFrame = 0x04,
+    Heartbeat = 0x05,
 }
 
 use crate::serialport;
@@ -127,6 +128,7 @@ impl Error {
 #[derive(Debug)]
 pub enum ErrorKind {
     NoAck,
+    NoHeartBeat,
     Oversize,
     MaxAttempts,
     SerialPort(serialport::ErrorKind),
@@ -145,39 +147,83 @@ fn make_control_frame(ctype: ControlType) -> [u8; 7] {
     frame[6] = FRAME_END;
     frame
 }
+
+fn make_data_frame(payload: &[u8]) -> Vec<u8> {
+    let mut frame: Vec<u8> = Vec::new();
+    frame.push(FRAME_START);
+    frame.push(FRAME_TYPE_DATA);
+    frame.push(payload.len() as u8);
+    for i in payload.iter() {
+        frame.push(*i);
+    }
+    let frame_crc = crc16::crc16(&frame[3..3 + payload.len()]);
+    frame.push((frame_crc & 0xff as u16) as u8);
+    frame.push((frame_crc >> 8) as u8);
+    frame.push(FRAME_END);
+    frame
+}
 pub type Result<T> = std::result::Result<T, Error>;
 impl Channel {
+    /// Create a new channel to the serial device
     pub fn new(port: serialport::SerialPort, num_attempts: u32) -> Channel {
         Channel { port, num_attempts }
     }
 
+    /// Open the channel for communication
+    pub fn open(&mut self) -> Result<()> {
+        //TODO: Implement heartbeat
+        if let Err(e) = self.port.open() {
+            return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+        }
+        // A heartbeat is used to confirm that the station is up.
+        let mut n_attempts = 0;
+        let mut n_bytes = 0;
+        let mut frame: [u8; 7] = [0; 7];
+        log::info("Attempting to establish a heartbeat..");
+        while n_attempts < self.num_attempts && n_bytes < 7 {
+            self.send_ctrl_frame(ControlType::Heartbeat)?;
+            match self.port.read(&mut frame[n_bytes..7]) {
+                Ok(n) => {
+                    n_bytes += n;
+                }
+                Err(e) => {
+                    log::debug(&format!("Error: {:?}", e));
+                    return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+                }
+            }
+            n_attempts += 1;
+            // Clear the IO queues on each attempt.
+            self.port.flush();
+        }
+        if frame[1] != FRAME_TYPE_CTRL && frame[3] != ControlType::Heartbeat as u8 {
+            self.port.close();
+            log::error("Could not establish heartbeat");
+            return Err(Error::new(
+                ErrorKind::NoHeartBeat,
+                "Failed to establish heartbeat",
+            ));
+        }
+        log::info("Heartbeat confirmed");
+        Ok(())
+    }
+
+    ///Send the payload over the channel.
     pub fn send(&self, payload: &[u8]) -> Result<()> {
-        use crate::crc16;
-        let mut frame: [u8; FRAME_SIZE_MAX] = [0; FRAME_SIZE_MAX];
-        let payload_len = payload.len();
-        if payload_len > FRAME_SIZE_MAX - 6 {
+        if payload.len() > FRAME_SIZE_MAX - 6 {
             return Err(Error::new(
                 ErrorKind::Oversize,
                 "Payload larger than maximum payload size",
             ));
         }
-        frame[0] = 0x7f;
-        frame[1] = FRAME_TYPE_DATA;
-        frame[2] = payload_len as u8; // Length
-        for i in 0..payload.len() {
-            frame[3 + i] = payload[i];
-        }
 
-        let frame_crc = crc16::crc16(&frame[3..3 + payload_len]);
-        frame[3 + payload_len] = (frame_crc & 0xff as u16) as u8;
-        frame[3 + payload_len + 1] = (frame_crc >> 8) as u8;
-        frame[3 + payload_len + 2] = 0xfe;
-        log::debug(&format!("Sending command {:?}", &frame[..payload_len + 6]));
+        let frame = make_data_frame(payload);
+
+        log::debug(&format!("Sending command {:?}", &frame));
 
         // send and listen for ACK or NACK
         let mut n_attempts = 0;
         while n_attempts < 3 {
-            match self.port.write(&frame[..6 + payload_len]) {
+            match self.port.write(&frame) {
                 Ok(n) => log::debug(&format!("Sent bytes: {}", n)),
                 Err(e) => {
                     log::debug(&format!("Error: {:?}", e));
@@ -191,7 +237,7 @@ impl Channel {
                 match self.port.read(&mut control[nbytes..3]) {
                     Ok(n) => {
                         nbytes = nbytes + n;
-                        log::debug(&format!("Recieved {} bytes", n));
+                        log::debug(&format!("Recieved {} bytes: {:?}", n, control));
                     }
                     Err(e) => log::error(&format!("Error {:?}", e)),
                 }
@@ -212,6 +258,8 @@ impl Channel {
                     }
                 }
 
+                log::debug(&format!("Control frame: {:?}", control));
+
                 if control[3] == 0x01 {
                     log::debug("Recieved ACK");
                     return Ok(());
@@ -224,6 +272,7 @@ impl Channel {
             "Failed recieving ACK after command",
         ))
     }
+
     pub fn recv(&self) -> Result<Vec<u8>> {
         use crate::crc16;
         let mut attempts = 0;
@@ -286,6 +335,9 @@ impl Channel {
             ErrorKind::MaxAttempts,
             "Maximum number of recieve attempts reached",
         ))
+    }
+    pub fn send_heartbeat(&self) -> Result<()> {
+        self.send_ctrl_frame(ControlType::Heartbeat)
     }
     fn send_ctrl_frame(&self, ctype: ControlType) -> Result<()> {
         let frame = make_control_frame(ctype);
