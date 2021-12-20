@@ -1,4 +1,4 @@
-//!
+//! Module for opening Serial devices
 use crate::log::{debug, log};
 use crate::termios;
 use nix::fcntl::{self, OFlag};
@@ -79,13 +79,13 @@ impl Drop for SerialPort {
 }
 
 impl SerialPort {
-    pub fn new(path: &str, baud: BaudRate, timeout: Duration) -> Result<SerialPort> {
-        Ok(SerialPort {
+    pub fn new(path: &str, baud: BaudRate, timeout: Duration) -> SerialPort {
+        SerialPort {
             path: path.into(),
             fd: None,
             baud,
             timeout,
-        })
+        }
     }
 
     /// Write bytes from arr to open serial port
@@ -126,7 +126,7 @@ impl SerialPort {
     pub fn flush(&self) -> Result<()> {
         use nix::sys::termios::{tcflush, FlushArg};
         match self.fd {
-            Some(fd) => match tcflush(fd, FlushArg::TCIFLUSH) {
+            Some(fd) => match tcflush(fd, FlushArg::TCIOFLUSH) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.into()),
             },
@@ -201,7 +201,13 @@ impl SerialPort {
         settings.control_chars[SpecialCharacterIndices::VTIME as usize] = vtime;
         //TODO: Maybe implement a way to set and use VMIN to control the minimim
         //number of characters
-        settings.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+        //
+        //NOTE: Per the man pages of termios, VMIN > 0 and VTIME > 0 gives
+        //an interbyte timeout -- the timer only starts AFTER the first bytes
+        //has been recieved and restarts each consecutive byte. Thus VMIN should be
+        //set to zero for normal timeout behavior where the timer is started
+        //after the call to read.
+        settings.control_chars[SpecialCharacterIndices::VMIN as usize] = 0;
         cfsetospeed(&mut settings, self.baud)?;
         cfsetispeed(&mut settings, self.baud)?;
         set_termios(&mut fd, &settings)?;
