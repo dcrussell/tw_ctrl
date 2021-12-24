@@ -51,6 +51,11 @@ pub fn run(config: config::Config) -> Result<(), Box<dyn Error>> {
         None => None,
     };
 
+    let timeout: u64 = match config.get("serial.timeout") {
+        Some(n) => n.parse()?,
+        None => 0,
+    };
+
     //TODO: Provide conversion function from
     // u32 to rate
     let rate = match baud {
@@ -59,14 +64,13 @@ pub fn run(config: config::Config) -> Result<(), Box<dyn Error>> {
         _ => panic!("Unsupported baud rate"),
     };
 
-    //TODO: Timeout should be configurable in config
-    let port = serialport::SerialPort::new(device, rate, Duration::from_secs(3));
+    let port = serialport::SerialPort::new(device, rate, Duration::from_secs(timeout));
 
     if let Some(l) = &logger {
         l.info(&format!("Opening connection to {}", device));
     }
 
-    let mut channel = Channel::new(port, 5);
+    let mut channel = Channel::new(port, 3);
     if let Err(e) = channel.open() {
         if let Some(l) = &logger {
             l.fatal(&format!("Could not open channel to device: {:?}", e));
