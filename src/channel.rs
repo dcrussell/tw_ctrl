@@ -82,8 +82,11 @@
 //!
 //!
 
+use std::usize;
+
 use crate::crc16;
 use crate::log;
+use crate::serialport;
 
 /// Frame constants
 const FRAME_START: u8 = 0x7f;
@@ -91,6 +94,7 @@ const FRAME_END: u8 = 0xfe;
 const FRAME_TYPE_DATA: u8 = 0x44;
 const FRAME_TYPE_CTRL: u8 = 0x43;
 const FRAME_SIZE_MAX: usize = 86;
+const FRAME_CTRL_SIZE: usize = 7;
 
 enum ControlType {
     Ack = 0x01,
@@ -100,7 +104,6 @@ enum ControlType {
     Heartbeat = 0x05,
 }
 
-use crate::serialport;
 pub struct Channel {
     port: serialport::SerialPort,
     num_attempts: u32,
@@ -121,6 +124,15 @@ impl Error {
     }
 }
 
+impl From<serialport::Error> for Error {
+    fn from(e: serialport::Error) -> Error {
+        Error {
+            kind: ErrorKind::SerialPort(*e.kind()),
+            description: e.desc().to_string(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ErrorKind {
     NoAck,
@@ -128,13 +140,15 @@ pub enum ErrorKind {
     Oversize,
     MaxAttempts,
     SerialPort(serialport::ErrorKind),
+    InvalidFrame,
+    CRCFail,
 }
 
-fn make_control_frame(ctype: ControlType) -> [u8; 7] {
-    let mut frame: [u8; 7] = [0; 7];
+fn make_control_frame(ctype: ControlType) -> [u8; FRAME_CTRL_SIZE] {
+    let mut frame: [u8; FRAME_CTRL_SIZE] = [0; FRAME_CTRL_SIZE];
     frame[0] = FRAME_START;
     frame[1] = FRAME_TYPE_CTRL;
-    frame[2] = 0x01; // length
+    frame[2] = 0x01; // length of control frame payloads are always 1
     frame[3] = ctype as u8;
 
     let crc = crc16::crc16(&frame[3..4]);
@@ -158,7 +172,9 @@ fn make_data_frame(payload: &[u8]) -> Vec<u8> {
     frame.push(FRAME_END);
     frame
 }
+
 pub type Result<T> = std::result::Result<T, Error>;
+
 impl Channel {
     /// Create a new channel to the serial device
     pub fn new(port: serialport::SerialPort, num_attempts: u32) -> Channel {
@@ -167,14 +183,13 @@ impl Channel {
 
     /// Open the channel for communication
     pub fn open(&mut self) -> Result<()> {
-        //TODO: Implement heartbeat
         if let Err(e) = self.port.open() {
             return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
         }
         // A heartbeat is used to confirm that the station is up.
         let mut n_attempts = 0;
         let mut n_bytes = 0;
-        let mut frame: [u8; 7] = [0; 7];
+        let mut frame: [u8; FRAME_CTRL_SIZE] = [0; FRAME_CTRL_SIZE];
         log::info("Attempting to establish a heartbeat..");
         while n_attempts < self.num_attempts && n_bytes < 7 {
             self.send_ctrl_frame(ControlType::Heartbeat)?;
@@ -189,10 +204,10 @@ impl Channel {
             }
             n_attempts += 1;
             // Clear the IO queues on each attempt.
-            self.port.flush();
+            self.port.flush()?;
         }
         if frame[1] != FRAME_TYPE_CTRL && frame[3] != ControlType::Heartbeat as u8 {
-            self.port.close();
+            self.port.close()?;
             log::error("Could not establish heartbeat");
             return Err(Error::new(
                 ErrorKind::NoHeartBeat,
@@ -203,6 +218,33 @@ impl Channel {
         Ok(())
     }
 
+    fn try_send(&self, frame: &[u8]) -> Result<()> {
+        match self.port.write(&frame) {
+            Ok(n) => log::debug(&format!("Sent bytes: {:?}", frame)),
+            Err(e) => {
+                log::error(&format!("{:?}", e));
+                return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+            }
+        }
+        let mut control: [u8; FRAME_CTRL_SIZE] = [0; FRAME_CTRL_SIZE];
+        let mut nbytes = 0;
+        while nbytes < FRAME_CTRL_SIZE {
+            match self.port.read(&mut control[nbytes..FRAME_CTRL_SIZE]) {
+                Ok(n) => {
+                    nbytes = nbytes + n;
+                }
+                Err(e) => log::error(&format!("{:?}", e)),
+            }
+        }
+        if control[0] != FRAME_START
+            || control[1] != FRAME_TYPE_CTRL
+            || control[3] != ControlType::Ack as u8
+        {
+            self.port.flush()?;
+            return Err(Error::new(ErrorKind::NoAck, "ACK not recieved"));
+        }
+        Ok(())
+    }
     ///Send the payload over the channel.
     pub fn send(&self, payload: &[u8]) -> Result<()> {
         if payload.len() > FRAME_SIZE_MAX - 6 {
@@ -214,116 +256,86 @@ impl Channel {
 
         let frame = make_data_frame(payload);
 
-        log::debug(&format!("Sending command {:?}", &frame));
-
         // send and listen for ACK or NACK
         let mut n_attempts = 0;
-        while n_attempts < 3 {
-            match self.port.write(&frame) {
-                Ok(n) => log::debug(&format!("Sent bytes: {}", n)),
-                Err(e) => {
-                    log::debug(&format!("Error: {:?}", e));
-                    return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
-                }
-            }
-            let mut control: [u8; FRAME_SIZE_MAX] = [0; FRAME_SIZE_MAX];
-            let mut nbytes = 0;
-            // pull in header
-            while nbytes < 3 {
-                match self.port.read(&mut control[nbytes..3]) {
-                    Ok(n) => {
-                        nbytes = nbytes + n;
-                        log::debug(&format!("Recieved {} bytes: {:?}", n, control));
-                    }
-                    Err(e) => log::error(&format!("Error {:?}", e)),
-                }
-            }
-            if control[0] != 0x7f || control[1] != FRAME_TYPE_CTRL {
-                self.port.flush();
-            } else {
-                let payload_len = control[2] as usize;
-                //get the remaining parts of the frame
-                nbytes = 3;
-                while nbytes < payload_len as usize + 6 {
-                    match self.port.read(&mut control[nbytes..payload_len + 6]) {
-                        Ok(n) => {
-                            nbytes = nbytes + n;
-                            log::debug(&format!("Recieved {} bytes", n));
-                        }
-                        Err(e) => log::error(&format!("Error {:?}", e)),
-                    }
-                }
-
-                log::debug(&format!("Control frame: {:?}", control));
-
-                if control[3] == 0x01 {
-                    log::debug("Recieved ACK");
-                    return Ok(());
-                }
+        while n_attempts < self.num_attempts {
+            match self.try_send(&frame) {
+                Ok(_) => return Ok(()),
+                Err(e) => log::error(&format!("{:?}", e)),
             }
             n_attempts += 1;
         }
         Err(Error::new(
-            ErrorKind::NoAck,
-            "Failed recieving ACK after command",
+            ErrorKind::MaxAttempts,
+            "Maximum number of resend attempts reached",
         ))
     }
 
-    pub fn recv(&self) -> Result<Vec<u8>> {
-        use crate::crc16;
-        let mut attempts = 0;
-        while attempts < self.num_attempts {
-            let mut frame: Vec<u8> = vec![0; FRAME_SIZE_MAX];
-            let mut nbytes = 0;
+    fn try_recv(&self) -> Result<Vec<u8>> {
+        let mut frame: Vec<u8> = vec![0; FRAME_SIZE_MAX];
+        let mut nbytes = 0;
 
-            // pull in header
-            while nbytes < 3 {
-                match self.port.read(&mut frame[nbytes..3]) {
-                    Ok(n) => {
-                        nbytes = nbytes + n;
-                        log::debug(&format!("Recieved {} bytes", n));
-                    }
-                    Err(e) => {
-                        log::error(&format!("{:?}", e));
-                        break;
-                    }
+        // pull in header
+        while nbytes < 3 {
+            match self.port.read(&mut frame[nbytes..3]) {
+                Ok(n) => {
+                    nbytes = nbytes + n;
+                }
+                Err(e) => {
+                    log::error(&format!("{:?}", e));
+                    break;
                 }
             }
-            if frame[0] != FRAME_START || frame[1] != FRAME_TYPE_DATA {
-                self.send_ctrl_frame(ControlType::InvalidFrame)?;
-                self.port.flush();
-            } else if frame[2] as usize > FRAME_SIZE_MAX - 6 {
+        }
+        let payload_size: usize = {
+            if frame[2] as usize > FRAME_SIZE_MAX - 6 {
                 self.send_ctrl_frame(ControlType::Oversize);
                 self.port.flush();
+                return Err(Error::new(ErrorKind::Oversize, "Frame oversize"));
             } else {
-                let payload_len = frame[2] as usize;
+                frame[2] as usize
+            }
+        };
 
-                //get the remaining parts of the frame
-                nbytes = 3;
-                while nbytes < payload_len as usize + 6 {
-                    match self.port.read(&mut frame[nbytes..payload_len + 6]) {
-                        Ok(n) => {
-                            nbytes = nbytes + n;
-                            log::debug(&format!("Recieved {} bytes", n));
-                        }
-                        Err(e) => log::error(&format!("Error {:?}", e)),
-                    }
+        while nbytes < payload_size {
+            match self.port.read(&mut frame[nbytes..payload_size + 6]) {
+                Ok(n) => {
+                    nbytes = nbytes + n;
+                    log::debug(&format!("Recieved {} bytes", n));
                 }
-                if frame[payload_len + 6 - 1] != FRAME_END {
-                    self.send_ctrl_frame(ControlType::InvalidFrame)?;
-                    self.port.flush();
-                } else {
-                    let check: u16 = crc16::crc16(&frame[3..3 + payload_len]);
-                    let mut frame_crc: u16 = frame[payload_len + 6 - 3] as u16 & 0xff;
-                    frame_crc |= (frame[payload_len + 6 - 2] as u16) << 8;
-                    if check != frame_crc {
-                        self.send_ctrl_frame(ControlType::CRCFail);
-                        self.port.flush();
-                    } else {
-                        self.send_ctrl_frame(ControlType::Ack);
-                        return Ok(frame[3..3 + payload_len].to_vec());
-                    }
-                }
+                Err(e) => log::error(&format!("Error {:?}", e)),
+            }
+        }
+        if frame[0] != FRAME_START
+            || frame[1] != FRAME_TYPE_DATA
+            || frame[payload_size + 6 - 1] != FRAME_END
+        {
+            self.send_ctrl_frame(ControlType::InvalidFrame)?;
+            self.port.flush();
+            return Err(Error::new(
+                ErrorKind::InvalidFrame,
+                "Recieved frame is invalid",
+            ));
+        }
+
+        let check: u16 = crc16::crc16(&frame[3..3 + payload_size]);
+        let mut frame_crc: u16 = frame[payload_size + 6 - 3] as u16 & 0xff;
+        frame_crc |= (frame[payload_size + 6 - 2] as u16) << 8;
+        if check != frame_crc {
+            self.send_ctrl_frame(ControlType::CRCFail);
+            self.port.flush();
+            return Err(Error::new(ErrorKind::CRCFail, "CRC check did not pass"));
+        }
+        self.send_ctrl_frame(ControlType::Ack);
+        Ok(frame[3..3 + payload_size].to_vec())
+    }
+
+    pub fn recv(&self) -> Result<Vec<u8>> {
+        let mut attempts = 0;
+        while attempts < self.num_attempts {
+            match self.try_recv() {
+                Ok(v) => return Ok(v),
+                Err(e) => log::error(&format!("channel: {:?}", e)),
             }
             attempts += 1;
         }
