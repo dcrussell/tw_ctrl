@@ -1,6 +1,7 @@
 //! This module provides logging to a file and to std out
+use chrono::prelude::*;
+use chrono::{DateTime, Local};
 use std::io::Write;
-
 #[derive(PartialOrd, PartialEq)]
 pub enum Level {
     Off,
@@ -12,6 +13,7 @@ pub enum Level {
 }
 
 pub mod file {
+
     use super::Level;
     use super::Write;
     use super::LOGLEVEL;
@@ -37,13 +39,14 @@ pub mod file {
         }
 
         pub fn log(&self, level: &Level, s: &str) -> Result<()> {
+            let dt: chrono::DateTime<chrono::Local> = chrono::Local::now();
             match level {
                 Level::Off => (),
-                Level::Debug => writeln!(&self.file, "[DEBUG] {}", s)?,
-                Level::Info => writeln!(&self.file, "[INFO] {}", s)?,
-                Level::Warning => writeln!(&self.file, "[WARN] {}", s)?,
-                Level::Error => writeln!(&self.file, "[ERROR] {}", s)?,
-                Level::Fatal => writeln!(&self.file, "[FATAL] {}", s)?,
+                Level::Debug => writeln!(&self.file, "[{}][DEBUG] {}", dt, s)?,
+                Level::Info => writeln!(&self.file, "[{}][INFO] {}", dt, s)?,
+                Level::Warning => writeln!(&self.file, "[{}][WARN] {}", dt, s)?,
+                Level::Error => writeln!(&self.file, "[{}][ERROR] {}", dt, s)?,
+                Level::Fatal => writeln!(&self.file, "[{}][FATAL] {}", dt, s)?,
             };
 
             Ok(())
@@ -93,13 +96,14 @@ const LOGLEVEL: Level = Level::Debug;
 //}
 
 pub fn log(level: &Level, s: &str) {
+    let dt: chrono::DateTime<chrono::Local> = chrono::Local::now();
     match level {
         Level::Off => (),
-        Level::Debug => println!("[DEBUG] {}", s),
-        Level::Info => println!("[INFO] {}", s),
-        Level::Warning => println!("[WARN] {}", s),
-        Level::Error => println!("[ERROR] {}", s),
-        Level::Fatal => println!("[FATAL] {}", s),
+        Level::Debug => println!("[{}][DEBUG] {}", dt, s),
+        Level::Info => println!("[{}][INFO] {}", dt, s),
+        Level::Warning => println!("[{}][WARN] {}", dt, s),
+        Level::Error => println!("[{}][ERROR] {}", dt, s),
+        Level::Fatal => println!("[{}][FATAL] {}", dt, s),
     }
 }
 
