@@ -1,4 +1,4 @@
-//!
+//! Module providing some convience functions for using termios
 use crate::serialport::{Error, Result};
 
 use nix::sys::termios::{self, tcgetattr, tcsetattr, SetArg, Termios};

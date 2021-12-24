@@ -41,7 +41,6 @@ fn filter_comments(line: &str) -> String {
         Some(i) => i,
         None => return line.to_string(),
     };
-    //TODO:  Maybe a better way to do this?
     let filtered = line[..comment_pos].to_string();
     filtered.trim().to_string()
 }

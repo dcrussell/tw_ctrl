@@ -57,7 +57,7 @@ impl Error {
 }
 //TODO: At some point I should update this to
 //match specific errors but for now
-//it will me fen to just wrap Errno in my enum
+//it will be fine to just wrap Errno in my enum
 impl From<nix::errno::Errno> for Error {
     fn from(e: nix::errno::Errno) -> Error {
         Error::new(ErrorKind::Errno(e), e.desc())
@@ -79,6 +79,7 @@ impl Drop for SerialPort {
 }
 
 impl SerialPort {
+    ///Create a new serial port.
     pub fn new(path: &str, baud: BaudRate, timeout: Duration) -> SerialPort {
         SerialPort {
             path: path.into(),
@@ -112,7 +113,7 @@ impl SerialPort {
         }
     }
 
-    /// Close the serial port
+    /// Close the serial port.
     pub fn close(&mut self) -> Result<()> {
         use nix::unistd::close;
         match self.fd {
@@ -199,9 +200,7 @@ impl SerialPort {
             }
         };
         settings.control_chars[SpecialCharacterIndices::VTIME as usize] = vtime;
-        //TODO: Maybe implement a way to set and use VMIN to control the minimim
-        //number of characters
-        //
+
         //NOTE: Per the man pages of termios, VMIN > 0 and VTIME > 0 gives
         //an interbyte timeout -- the timer only starts AFTER the first bytes
         //has been recieved and restarts each consecutive byte. Thus VMIN should be
