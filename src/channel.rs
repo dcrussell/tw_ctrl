@@ -74,7 +74,13 @@
 //! Heartbeat - 0x05: Used to confirm that a connection has been established.
 //!
 //! *Communication*
-//! TODO: Write this.
+//!
+//! When one end of the channel receives a data frame the frame is checked for
+//! against the layout and the checksum is calculated. The receiver sends an
+//! ACK frame if it passes, otherwise it sends a NACK frame. Depending on how
+//! the sender's channel is configured, the sender may re-attempt transmission
+//! if a NACK is received.
+//!
 //!
 //!
 //!
