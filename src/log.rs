@@ -39,7 +39,7 @@ pub mod file {
         }
 
         pub fn log(&self, level: &Level, s: &str) -> Result<()> {
-            let dt: chrono::DateTime<chrono::Local> = chrono::Local::now();
+            let dt = chrono::Local::now().to_rfc3339();
             match level {
                 Level::Off => (),
                 Level::Debug => writeln!(&self.file, "[{}][DEBUG] {}", dt, s)?,
@@ -96,7 +96,7 @@ const LOGLEVEL: Level = Level::Debug;
 //}
 
 pub fn log(level: &Level, s: &str) {
-    let dt: chrono::DateTime<chrono::Local> = chrono::Local::now();
+    let dt = chrono::Local::now().to_rfc3339();
     match level {
         Level::Off => (),
         Level::Debug => println!("[{}][DEBUG] {}", dt, s),
