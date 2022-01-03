@@ -1,3 +1,4 @@
+use reqwest;
 use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
@@ -70,7 +71,7 @@ pub fn run(config: config::Config) -> Result<(), Box<dyn Error>> {
         l.info(&format!("Opening connection to {}", device));
     }
 
-    let mut channel = Channel::new(port, 3);
+    let mut channel = Channel::new(port, 5);
     if let Err(e) = channel.open() {
         if let Some(l) = &logger {
             l.fatal(&format!("Could not open channel to device: {:?}", e));
@@ -133,7 +134,61 @@ pub fn run(config: config::Config) -> Result<(), Box<dyn Error>> {
             "Temp: {}, Press: {}, Hum: {}",
             temp_f32, press_f32, hum_f32
         ));
+
+        let dt: chrono::DateTime<chrono::Local> = chrono::Local::now();
+
+        let data = format!(
+            "envSensor,node=1 temperature={},humidity={},pressure={} {}",
+            temp_f32,
+            hum_f32,
+            press_f32,
+            dt.timestamp()
+        );
+        //Send data to influxDB
+        //
+        log::debug(&format!("Writing data to Influx: {}", data));
+        let addr = config.get("db.host").unwrap();
+        let port = config.get("db.port").unwrap();
+        let api_key = config.get("db.api.key").unwrap();
+        let api_endpoint = config.get("db.api.endpoint").unwrap();
+        let api = InfluxWebClient {
+            host: Host {
+                addr: addr.to_string(),
+                port: port.parse()?,
+            },
+            api_key: api_key.to_string(),
+            api_endpoint: api_endpoint.to_string(),
+        };
+        log::info(&format!("{:?}", api.send(data)));
     }
 
     Ok(())
+}
+
+struct Host {
+    addr: String,
+    port: u32,
+}
+struct InfluxWebClient {
+    host: Host,
+    api_key: String,
+    api_endpoint: String,
+}
+
+impl InfluxWebClient {
+    fn send(&self, data: String) -> Result<reqwest::blocking::Response, reqwest::Error> {
+        let client = reqwest::blocking::Client::new();
+        client
+            .post(
+                "http://".to_string()
+                    + &self.host.addr
+                    + ":"
+                    + &self.host.port.to_string()
+                    + &self.api_endpoint,
+            )
+            .header("Authorization", "Token ".to_string() + &self.api_key)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(data)
+            .send()
+    }
 }
