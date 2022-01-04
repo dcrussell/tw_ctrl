@@ -12,6 +12,19 @@ pub enum Level {
     Debug,
 }
 
+impl ToString for Level {
+    fn to_string(&self) -> String {
+        match self {
+            Level::Off => "".to_string(),
+            Level::Debug => "DEBUG".to_string(),
+            Level::Info => "INFO".to_string(),
+            Level::Warning => "WARN".to_string(),
+            Level::Error => "ERROR".to_string(),
+            Level::Fatal => "FATAL".to_string(),
+        }
+    }
+}
+
 pub mod file {
 
     use super::Level;
@@ -42,11 +55,7 @@ pub mod file {
             let dt = chrono::Local::now().to_rfc3339();
             match level {
                 Level::Off => (),
-                Level::Debug => writeln!(&self.file, "[{}][DEBUG] {}", dt, s)?,
-                Level::Info => writeln!(&self.file, "[{}][INFO] {}", dt, s)?,
-                Level::Warning => writeln!(&self.file, "[{}][WARN] {}", dt, s)?,
-                Level::Error => writeln!(&self.file, "[{}][ERROR] {}", dt, s)?,
-                Level::Fatal => writeln!(&self.file, "[{}][FATAL] {}", dt, s)?,
+                _ => writeln!(&self.file, "[{}] [{}] {}", dt, level.to_string(), s)?,
             };
 
             Ok(())
@@ -99,11 +108,7 @@ pub fn log(level: &Level, s: &str) {
     let dt = chrono::Local::now().to_rfc3339();
     match level {
         Level::Off => (),
-        Level::Debug => println!("[{}][DEBUG] {}", dt, s),
-        Level::Info => println!("[{}][INFO] {}", dt, s),
-        Level::Warning => println!("[{}][WARN] {}", dt, s),
-        Level::Error => println!("[{}][ERROR] {}", dt, s),
-        Level::Fatal => println!("[{}][FATAL] {}", dt, s),
+        _ => println!("[{}] [{}] {}", dt, level.to_string(), s),
     }
 }
 
