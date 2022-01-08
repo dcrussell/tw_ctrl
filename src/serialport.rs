@@ -17,6 +17,7 @@ use std::fmt;
 pub enum ErrorKind {
     Unknown,
     PortClosed,
+    Timeout,
     Errno(nix::errno::Errno),
 }
 
@@ -106,7 +107,16 @@ impl SerialPort {
         use nix::unistd::read;
         match self.fd {
             Some(fd) => match read(fd, arr) {
-                Ok(n) => Ok(n),
+                Ok(n) => {
+                    if n == 0 {
+                        return Err(Error::new(
+                            ErrorKind::Timeout,
+                            "Timeout reached. No bytes read",
+                        ));
+                    }
+                    Ok(n)
+                }
+
                 Err(e) => Err(e.into()),
             },
             None => Err(Error::new(ErrorKind::PortClosed, "Serial port is not open")),
@@ -222,9 +232,6 @@ impl SerialPort {
     ///is called.
     fn set_baud(&mut self, baud: BaudRate) -> Result<()> {
         use nix::sys::termios::{cfsetispeed, cfsetospeed};
-        // TODO: if the serial port is not open,
-        // just set the rate
-        // otherwise we should immediately apply the settings
         match self.fd {
             None => {
                 self.baud = baud;

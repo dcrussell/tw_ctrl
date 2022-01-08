@@ -204,8 +204,7 @@ impl Channel {
                     n_bytes += n;
                 }
                 Err(e) => {
-                    log::debug(&format!("Error: {:?}", e));
-                    return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+                    log::debug(&format!("{:?}", e));
                 }
             }
             n_attempts += 1;
@@ -239,7 +238,10 @@ impl Channel {
                 Ok(n) => {
                     nbytes = nbytes + n;
                 }
-                Err(e) => log::error(&format!("{:?}", e)),
+                Err(e) => {
+                    log::error(&format!("{:?}", e));
+                    return Err(Error::new(ErrorKind::SerialPort(*e.kind()), &e.to_string()));
+                }
             }
         }
         if control[0] != FRAME_START
